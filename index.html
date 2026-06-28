@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Bible Scroll</title>
+
+<!-- PWA: full-screen app experience when added to home screen -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bible Scroll">
+<meta name="application-name" content="Bible Scroll">
+<meta name="theme-color" content="#0D1B2A">
+<meta name="description" content="Scroll through the entire Bible one verse at a time — NIV with Apocrypha.">
+
+<!-- PWA manifest -->
+<link rel="manifest" href="manifest.json">
+
+<!-- Apple touch icons (inline SVG fallback encoded) -->
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400;1,600&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+<script>
+  // Register service worker for offline shell
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+  }
+</script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --navy: #0D1B2A;
+    --navy-card: #162840;
+    --parchment: #F5E6C8;
+    --parchment-dim: #C8B99A;
+    --gold: #C9A84C;
+    --gold-glow: rgba(201,168,76,0.18);
+    --sage: #7A9E7E;
+    --sage-dim: rgba(122,158,126,0.25);
+    --apoc: #B87C4C;
+    --apoc-dim: rgba(184,124,76,0.22);
+    --nt-blue: #8aabdc;
+    --nt-dim: rgba(100,130,200,0.18);
+  }
+  html, body {
+    height: 100%; background: var(--navy);
+    overflow: hidden; font-family: 'Inter', sans-serif;
+    color: var(--parchment); -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Header ── */
+  #app-header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    padding: 12px 18px 8px;
+    background: linear-gradient(to bottom, rgba(13,27,42,0.98) 70%, transparent);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .logo {
+    font-family: 'Playfair Display', serif; font-size: 1.25rem;
+    font-weight: 700; color: var(--gold); letter-spacing: 0.03em;
+    line-height: 1.1;
+  }
+  .logo-sub {
+    font-family: 'Inter', sans-serif; font-size: 0.55rem;
+    font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--parchment-dim); display: block; margin-top: 1px;
+  }
+  .header-right { display: flex; gap: 8px; align-items: center; }
+  .header-btn {
+    background: none; border: 1px solid rgba(201,168,76,0.25); cursor: pointer;
+    color: var(--parchment-dim); font-size: 0.7rem; font-family: 'Inter', sans-serif;
+    font-weight: 500; letter-spacing: 0.05em; padding: 5px 10px; border-radius: 14px;
+    transition: all 0.2s;
+  }
+  .header-btn:hover { color: var(--gold); border-color: var(--gold); }
+  .header-btn.icon-btn { font-size: 1rem; padding: 5px 9px; border: none; color: var(--parchment-dim); }
+  .header-btn.icon-btn:hover { color: var(--gold); }
+
+  /* ── Progress bar ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; height: 2px; width: 0;
+    background: linear-gradient(to right, var(--gold), #e8c96a);
+    z-index: 200; transition: width 0.4s ease;
+    box-shadow: 0 0 8px var(--gold);
+  }
+
+  /* ── Scroll container ── */
+  #scroll-container {
+    height: 100vh; overflow-y: scroll;
+    scroll-snap-type: y mandatory; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #scroll-container::-webkit-scrollbar { display: none; }
+
+  /* ── Verse card ── */
+  .verse-card {
+    height: 100vh; scroll-snap-align: start;
+    display: flex; align-items: center; justify-content: center;
+    padding: 76px 22px 86px; position: relative; overflow: hidden;
+  }
+  .verse-card::before {
+    content: ''; position: absolute; inset: 0;
+    background: var(--card-bg, linear-gradient(160deg,#162840 0%,#0D1B2A 100%)); z-index: 0;
+  }
+  .verse-card::after {
+    content: ''; position: absolute; inset: 0;
+    background: radial-gradient(ellipse 65% 55% at 50% 48%, var(--card-glow, rgba(201,168,76,0.06)) 0%, transparent 72%);
+    z-index: 0; pointer-events: none;
+  }
+
+  /* skeleton loading */
+  .verse-card.loading .card-inner { opacity: 0.4; }
+  .skel-line {
+    height: 1.05em; background: rgba(245,230,200,0.1);
+    border-radius: 4px; margin-bottom: 0.6em;
+    animation: pulse 1.4s ease infinite alternate;
+  }
+  @keyframes pulse { from { opacity: 0.4; } to { opacity: 0.9; } }
+  .skel-line:nth-child(1){width:90%} .skel-line:nth-child(2){width:76%}
+  .skel-line:nth-child(3){width:84%} .skel-line:nth-child(4){width:58%}
+
+  .card-inner {
+    position: relative; z-index: 1; max-width: 480px; width: 100%;
+    display: flex; flex-direction: column;
+    animation: fadeUp 0.38s ease both;
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Illuminated manuscript left border */
+  .manuscript-border {
+    position: absolute; left: -18px; top: 8%; bottom: 8%; width: 3px;
+    background: linear-gradient(to bottom, transparent, var(--border-color, var(--gold)), var(--border-color, var(--gold)), transparent);
+    border-radius: 2px;
+    box-shadow: 0 0 10px var(--border-glow, var(--gold-glow));
+  }
+
+  /* Section tag */
+  .section-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 20px; padding: 4px 11px;
+    font-size: 0.66rem; font-weight: 600; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 14px; width: fit-content;
+  }
+  .section-tag::before { content: '✦'; font-size: 0.5rem; }
+  .tag-ot  { background: var(--sage-dim);  border: 1px solid rgba(122,158,126,0.35); color: var(--sage); }
+  .tag-nt  { background: var(--nt-dim);    border: 1px solid rgba(100,130,200,0.3);  color: var(--nt-blue); }
+  .tag-apo { background: var(--apoc-dim);  border: 1px solid rgba(184,124,76,0.35);  color: var(--apoc); }
+
+  /* Translation chip */
+  .trans-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: rgba(201,168,76,0.1); border: 1px solid rgba(201,168,76,0.25);
+    border-radius: 10px; padding: 2px 8px;
+    font-size: 0.6rem; font-weight: 700; letter-spacing: 0.1em;
+    color: var(--gold); margin-bottom: 10px; width: fit-content;
+  }
+
+  .verse-ref {
+    font-size: 0.7rem; font-weight: 600; color: var(--gold);
+    letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 16px;
+  }
+  .verse-text {
+    font-family: 'Playfair Display', serif;
+    font-size: clamp(1.15rem, 3.6vw, 1.55rem);
+    line-height: 1.78; color: var(--parchment); font-weight: 400;
+  }
+
+  /* ── Side actions ── */
+  .side-actions {
+    position: absolute; right: 0; bottom: 108px; z-index: 1;
+    display: flex; flex-direction: column; align-items: center; gap: 18px;
+  }
+  .action-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    background: none; border: none; cursor: pointer; color: var(--parchment);
+    transition: transform 0.2s;
+  }
+  .action-btn:active { transform: scale(0.86); }
+  .action-icon {
+    width: 42px; height: 42px; border-radius: 50%;
+    background: rgba(245,230,200,0.08);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.1rem; transition: background 0.2s;
+  }
+  .action-btn.saved .action-icon,
+  .action-btn:hover .action-icon { background: rgba(201,168,76,0.2); }
+  .action-label { font-size: 0.58rem; font-weight: 500; letter-spacing: 0.04em; color: var(--parchment-dim); }
+
+  /* ── Current ref label ── */
+  #current-ref {
+    position: fixed; bottom: 62px; left: 50%; transform: translateX(-50%);
+    font-size: 0.6rem; color: var(--parchment-dim); letter-spacing: 0.07em;
+    z-index: 100; white-space: nowrap; pointer-events: none;
+    text-transform: uppercase;
+  }
+
+  /* ── Bottom nav ── */
+  #bottom-nav {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+    background: linear-gradient(to top, rgba(13,27,42,0.98) 70%, transparent);
+    padding: 6px 0 16px;
+    display: flex; justify-content: space-around; align-items: center;
+  }
+  .nav-btn {
+    background: none; border: none; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    color: var(--parchment-dim); font-size: 0.6rem; font-weight: 500;
+    letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 10px;
+    transition: color 0.2s; font-family: 'Inter', sans-serif;
+  }
+  .nav-btn .nav-icon { font-size: 1.1rem; }
+  .nav-btn.active { color: var(--gold); }
+
+  /* ── Panels ── */
+  .panel {
+    position: fixed; inset: 0; z-index: 200; background: var(--navy);
+    transform: translateX(100%); transition: transform 0.35s cubic-bezier(.4,0,.2,1);
+    overflow-y: auto; padding: 68px 20px 40px;
+  }
+  .panel.open { transform: translateX(0); }
+  .panel h2 { font-family: 'Playfair Display', serif; font-size: 1.45rem; color: var(--gold); margin-bottom: 4px; }
+  .panel-sub { font-size: 0.74rem; color: var(--parchment-dim); margin-bottom: 22px; line-height: 1.6; }
+  .panel-close {
+    position: absolute; top: 16px; right: 18px;
+    background: none; border: none; color: var(--parchment-dim); font-size: 1.35rem; cursor: pointer;
+  }
+
+  /* Filter toggles */
+  .filter-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+  .filter-chip {
+    padding: 5px 14px; border-radius: 20px; font-size: 0.7rem; font-weight: 600;
+    letter-spacing: 0.07em; cursor: pointer; border: 1px solid; transition: all 0.2s;
+    font-family: 'Inter', sans-serif;
+  }
+  .filter-chip.fc-niv   { border-color: rgba(201,168,76,0.4);   color: var(--gold);    background: rgba(201,168,76,0.08); }
+  .filter-chip.fc-kjv   { border-color: rgba(100,130,200,0.4);  color: var(--nt-blue); background: rgba(100,130,200,0.08); }
+  .filter-chip.fc-ot    { border-color: rgba(122,158,126,0.4);  color: var(--sage);    background: rgba(122,158,126,0.08); }
+  .filter-chip.fc-nt    { border-color: rgba(100,130,200,0.4);  color: var(--nt-blue); background: rgba(100,130,200,0.08); }
+  .filter-chip.fc-apo   { border-color: rgba(184,124,76,0.4);   color: var(--apoc);    background: rgba(184,124,76,0.08); }
+  .filter-chip.active   { opacity: 1; }
+  .filter-chip.inactive { opacity: 0.38; }
+
+  /* Book list */
+  .testament-section { margin-bottom: 26px; }
+  .testament-header {
+    font-size: 0.63rem; font-weight: 700; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--sage); margin-bottom: 8px;
+    padding-bottom: 5px; border-bottom: 1px solid rgba(122,158,126,0.2);
+  }
+  .testament-header.nt-head { color: var(--nt-blue); border-color: rgba(100,130,200,0.2); }
+  .testament-header.apo-head { color: var(--apoc); border-color: rgba(184,124,76,0.2); }
+  .books-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 7px; }
+  .book-btn {
+    background: var(--navy-card); border: 1px solid rgba(245,230,200,0.07);
+    border-radius: 8px; padding: 9px 11px; text-align: left; cursor: pointer;
+    color: var(--parchment); font-size: 0.77rem; font-family: 'Inter', sans-serif;
+    transition: all 0.18s; display: flex; justify-content: space-between; align-items: center;
+  }
+  .book-btn:hover { border-color: var(--gold); color: var(--gold); }
+  .book-btn .bk-ch { font-size: 0.62rem; color: var(--parchment-dim); }
+  .book-btn .bk-badge {
+    font-size: 0.52rem; font-weight: 700; letter-spacing: 0.06em;
+    padding: 1px 5px; border-radius: 6px; margin-left: 4px;
+  }
+  .badge-niv { background: rgba(201,168,76,0.15); color: var(--gold); }
+  .badge-kjv { background: rgba(100,130,200,0.15); color: var(--nt-blue); }
+  .badge-apo { background: rgba(184,124,76,0.15); color: var(--apoc); }
+
+  /* Chapter picker */
+  #chapter-picker { display: none; margin-top: 14px; }
+  #chapter-picker.visible { display: block; }
+  #chapter-picker h3 { font-family: 'Playfair Display', serif; font-size: 0.95rem; color: var(--parchment); margin-bottom: 10px; }
+  .chapters-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 7px; }
+  .ch-btn {
+    background: var(--navy-card); border: 1px solid rgba(245,230,200,0.07);
+    border-radius: 6px; padding: 7px 4px; text-align: center; cursor: pointer;
+    color: var(--parchment-dim); font-size: 0.75rem; font-family: 'Inter', sans-serif;
+    transition: all 0.18s;
+  }
+  .ch-btn:hover { border-color: var(--gold); color: var(--gold); }
+
+  /* Saved panel */
+  .fav-item {
+    background: var(--navy-card); border-left: 3px solid var(--gold);
+    border-radius: 4px; padding: 13px; margin-bottom: 11px;
+  }
+  .fav-ref { font-size: 0.66rem; font-weight: 600; color: var(--gold); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 5px; }
+  .fav-text { font-family: 'Playfair Display', serif; font-size: 0.88rem; line-height: 1.6; color: var(--parchment); }
+  .fav-remove { float: right; background: none; border: none; color: var(--parchment-dim); cursor: pointer; font-size: 0.78rem; }
+  .fav-empty { text-align: center; color: var(--parchment-dim); font-size: 0.86rem; margin-top: 60px; line-height: 2.2; }
+
+  /* ── Scroll hint (first card only) ── */
+  .scroll-hint {
+    position: absolute; bottom: 88px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    color: var(--parchment-dim); font-size: 0.6rem; letter-spacing: 0.08em;
+    text-transform: uppercase; animation: bounce 2s ease-in-out infinite;
+    z-index: 1; pointer-events: none;
+  }
+  @keyframes bounce {
+    0%,100%{ transform: translateX(-50%) translateY(0); }
+    50%    { transform: translateX(-50%) translateY(6px); }
+  }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed; bottom: 74px; left: 50%;
+    transform: translateX(-50%) translateY(18px);
+    background: rgba(201,168,76,0.95); color: var(--navy);
+    padding: 7px 16px; border-radius: 20px;
+    font-size: 0.73rem; font-weight: 600; letter-spacing: 0.04em;
+    opacity: 0; transition: all 0.28s; z-index: 300; white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ── Loading overlay ── */
+  #loading-overlay {
+    position: fixed; inset: 0; z-index: 500; background: var(--navy);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; transition: opacity 0.5s;
+  }
+  #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+  .load-logo { font-family: 'Playfair Display', serif; font-size: 2rem; color: var(--gold); font-weight: 700; }
+  .load-sub { font-size: 0.72rem; color: var(--parchment-dim); letter-spacing: 0.12em; text-transform: uppercase; }
+  .load-bar-wrap { width: 180px; height: 2px; background: rgba(201,168,76,0.15); border-radius: 2px; overflow: hidden; }
+  .load-bar { height: 100%; background: var(--gold); border-radius: 2px; transition: width 0.3s; }
+  .load-status { font-size: 0.65rem; color: var(--parchment-dim); letter-spacing: 0.06em; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .scroll-hint { animation: none; }
+    .card-inner  { animation: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="load-logo">Bible Scroll</div>
+  <div class="load-sub">Preparing your verses…</div>
+  <div class="load-bar-wrap"><div class="load-bar" id="load-bar" style="width:0%"></div></div>
+  <div class="load-status" id="load-status">Gathering books…</div>
+</div>
+
+<div id="progress-bar"></div>
+
+<header id="app-header">
+  <div class="logo">
+    Bible Scroll
+    <span class="logo-sub">NIV · with Apocrypha</span>
+  </div>
+  <div class="header-right">
+    <button class="header-btn icon-btn" id="favs-btn" title="Saved">🔖</button>
+    <button class="header-btn" id="books-btn">Books</button>
+  </div>
+</header>
+
+<div id="scroll-container"></div>
+<div id="current-ref"></div>
+
+<nav id="bottom-nav">
+  <button class="nav-btn active" id="nav-read"><span class="nav-icon">📖</span>Read</button>
+  <button class="nav-btn" id="nav-filter"><span class="nav-icon">✦</span>Filter</button>
+  <button class="nav-btn" id="nav-books"><span class="nav-icon">📚</span>Books</button>
+  <button class="nav-btn" id="nav-saved"><span class="nav-icon">🔖</span>Saved</button>
+</nav>
+
+<!-- Filter panel -->
+<div class="panel" id="filter-panel">
+  <button class="panel-close" id="filter-close">✕</button>
+  <h2>Filter Feed</h2>
+  <p class="panel-sub">Choose which translations and sections appear in your randomized scroll. Toggle any combination.</p>
+  <p style="font-size:0.68rem;color:var(--parchment-dim);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Section</p>
+  <div class="filter-row">
+    <button class="filter-chip fc-ot active" data-filter="ot">Old Testament</button>
+    <button class="filter-chip fc-nt active" data-filter="nt">New Testament</button>
+    <button class="filter-chip fc-apo active" data-filter="apo">Apocrypha</button>
+  </div>
+  <button id="apply-filter" style="margin-top:16px;width:100%;padding:12px;background:rgba(201,168,76,0.15);border:1px solid var(--gold);color:var(--gold);font-family:'Inter',sans-serif;font-size:0.8rem;font-weight:600;border-radius:10px;cursor:pointer;letter-spacing:0.06em;">
+    Reshuffle with These Filters
+  </button>
+</div>
+
+<!-- Books panel -->
+<div class="panel" id="books-panel">
+  <button class="panel-close" id="books-close">✕</button>
+  <h2>Navigate</h2>
+  <p class="panel-sub">Jump to any verse. Both NIV and KJV+Apocrypha books are listed.</p>
+  <div id="book-list-container"></div>
+  <div id="chapter-picker">
+    <h3 id="chapter-picker-title">Select Chapter</h3>
+    <div class="chapters-grid" id="chapters-grid"></div>
+  </div>
+</div>
+
+<!-- Saved panel -->
+<div class="panel" id="saved-panel">
+  <button class="panel-close" id="saved-close">✕</button>
+  <h2>Saved Verses</h2>
+  <p class="panel-sub">Your personal scripture collection across both translations.</p>
+  <div id="saved-list"></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// BIBLE DATA
+// ─────────────────────────────────────────────
+
+// Standard 66 books (shared canon for NIV + KJV)
+const BOOKS_STANDARD = [
+  {id:1,name:"Genesis",chapters:50,section:"ot"},
+  {id:2,name:"Exodus",chapters:40,section:"ot"},
+  {id:3,name:"Leviticus",chapters:27,section:"ot"},
+  {id:4,name:"Numbers",chapters:36,section:"ot"},
+  {id:5,name:"Deuteronomy",chapters:34,section:"ot"},
+  {id:6,name:"Joshua",chapters:24,section:"ot"},
+  {id:7,name:"Judges",chapters:21,section:"ot"},
+  {id:8,name:"Ruth",chapters:4,section:"ot"},
+  {id:9,name:"1 Samuel",chapters:31,section:"ot"},
+  {id:10,name:"2 Samuel",chapters:24,section:"ot"},
+  {id:11,name:"1 Kings",chapters:22,section:"ot"},
+  {id:12,name:"2 Kings",chapters:25,section:"ot"},
+  {id:13,name:"1 Chronicles",chapters:29,section:"ot"},
+  {id:14,name:"2 Chronicles",chapters:36,section:"ot"},
+  {id:15,name:"Ezra",chapters:10,section:"ot"},
+  {id:16,name:"Nehemiah",chapters:13,section:"ot"},
+  {id:17,name:"Esther",chapters:10,section:"ot"},
+  {id:18,name:"Job",chapters:42,section:"ot"},
+  {id:19,name:"Psalms",chapters:150,section:"ot"},
+  {id:20,name:"Proverbs",chapters:31,section:"ot"},
+  {id:21,name:"Ecclesiastes",chapters:12,section:"ot"},
+  {id:22,name:"Song of Solomon",chapters:8,section:"ot"},
+  {id:23,name:"Isaiah",chapters:66,section:"ot"},
+  {id:24,name:"Jeremiah",chapters:52,section:"ot"},
+  {id:25,name:"Lamentations",chapters:5,section:"ot"},
+  {id:26,name:"Ezekiel",chapters:48,section:"ot"},
+  {id:27,name:"Daniel",chapters:12,section:"ot"},
+  {id:28,name:"Hosea",chapters:14,section:"ot"},
+  {id:29,name:"Joel",chapters:3,section:"ot"},
+  {id:30,name:"Amos",chapters:9,section:"ot"},
+  {id:31,name:"Obadiah",chapters:1,section:"ot"},
+  {id:32,name:"Jonah",chapters:4,section:"ot"},
+  {id:33,name:"Micah",chapters:7,section:"ot"},
+  {id:34,name:"Nahum",chapters:3,section:"ot"},
+  {id:35,name:"Habakkuk",chapters:3,section:"ot"},
+  {id:36,name:"Zephaniah",chapters:3,section:"ot"},
+  {id:37,name:"Haggai",chapters:2,section:"ot"},
+  {id:38,name:"Zechariah",chapters:14,section:"ot"},
+  {id:39,name:"Malachi",chapters:4,section:"ot"},
+  {id:40,name:"Matthew",chapters:28,section:"nt"},
+  {id:41,name:"Mark",chapters:16,section:"nt"},
+  {id:42,name:"Luke",chapters:24,section:"nt"},
+  {id:43,name:"John",chapters:21,section:"nt"},
+  {id:44,name:"Acts",chapters:28,section:"nt"},
+  {id:45,name:"Romans",chapters:16,section:"nt"},
+  {id:46,name:"1 Corinthians",chapters:16,section:"nt"},
+  {id:47,name:"2 Corinthians",chapters:13,section:"nt"},
+  {id:48,name:"Galatians",chapters:6,section:"nt"},
+  {id:49,name:"Ephesians",chapters:6,section:"nt"},
+  {id:50,name:"Philippians",chapters:4,section:"nt"},
+  {id:51,name:"Colossians",chapters:4,section:"nt"},
+  {id:52,name:"1 Thessalonians",chapters:5,section:"nt"},
+  {id:53,name:"2 Thessalonians",chapters:3,section:"nt"},
+  {id:54,name:"1 Timothy",chapters:6,section:"nt"},
+  {id:55,name:"2 Timothy",chapters:4,section:"nt"},
+  {id:56,name:"Titus",chapters:3,section:"nt"},
+  {id:57,name:"Philemon",chapters:1,section:"nt"},
+  {id:58,name:"Hebrews",chapters:13,section:"nt"},
+  {id:59,name:"James",chapters:5,section:"nt"},
+  {id:60,name:"1 Peter",chapters:5,section:"nt"},
+  {id:61,name:"2 Peter",chapters:3,section:"nt"},
+  {id:62,name:"1 John",chapters:5,section:"nt"},
+  {id:63,name:"2 John",chapters:1,section:"nt"},
+  {id:64,name:"3 John",chapters:1,section:"nt"},
+  {id:65,name:"Jude",chapters:1,section:"nt"},
+  {id:66,name:"Revelation",chapters:22,section:"nt"},
+];
+
+// KJV Apocryphal books — Bolls uses bookid 67+ for apocrypha
+// These are the books in KJV with Apocrypha on Bolls.life
+const BOOKS_APOCRYPHA = [
+  {id:67,name:"1 Esdras",chapters:9,section:"apo"},
+  {id:68,name:"2 Esdras",chapters:16,section:"apo"},
+  {id:69,name:"Tobit",chapters:14,section:"apo"},
+  {id:70,name:"Judith",chapters:16,section:"apo"},
+  {id:71,name:"Additions to Esther",chapters:16,section:"apo"},
+  {id:72,name:"Wisdom of Solomon",chapters:19,section:"apo"},
+  {id:73,name:"Sirach",chapters:51,section:"apo"},
+  {id:74,name:"Baruch",chapters:6,section:"apo"},
+  {id:75,name:"Letter of Jeremiah",chapters:1,section:"apo"},
+  {id:76,name:"Prayer of Azariah",chapters:1,section:"apo"},
+  {id:77,name:"Susanna",chapters:1,section:"apo"},
+  {id:78,name:"Bel and the Dragon",chapters:1,section:"apo"},
+  {id:79,name:"1 Maccabees",chapters:16,section:"apo"},
+  {id:80,name:"2 Maccabees",chapters:15,section:"apo"},
+  {id:81,name:"Prayer of Manasseh",chapters:1,section:"apo"},
+];
+
+const API = 'https://bolls.life';
+const cache = {}; // "TRANS-bookId-ch" → verses array
+
+// ─────────────────────────────────────────────
+// STATE
+// ─────────────────────────────────────────────
+let filters = { ot: true, nt: true, apo: true };
+let versePool = [];      // shuffled [{translation, bookId, chapter, verse, section}]
+let poolIndex = 0;
+let renderedCards = [];
+let savedVerses = JSON.parse(localStorage.getItem('bs_saved') || '[]');
+let savedSet = new Set(savedVerses.map(v => v.key));
+let loadingMore = false;
+let selectedBookNav = null;
+
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
+function bookById(id) {
+  return [...BOOKS_STANDARD, ...BOOKS_APOCRYPHA].find(b => b.id === id);
+}
+
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const BG_THEMES = [
+  {bg:'linear-gradient(160deg,#162840 0%,#0D1B2A 100%)',glow:'rgba(201,168,76,0.07)',border:'var(--gold)',borderGlow:'rgba(201,168,76,0.25)'},
+  {bg:'linear-gradient(160deg,#122A1A 0%,#0D1B2A 100%)',glow:'rgba(122,158,126,0.10)',border:'var(--sage)',borderGlow:'rgba(122,158,126,0.25)'},
+  {bg:'linear-gradient(160deg,#1E1530 0%,#0D1B2A 100%)',glow:'rgba(180,140,220,0.08)',border:'#b58ae0',borderGlow:'rgba(180,140,220,0.22)'},
+  {bg:'linear-gradient(160deg,#0E2030 0%,#0D1B2A 100%)',glow:'rgba(100,160,220,0.08)',border:'var(--nt-blue)',borderGlow:'rgba(100,160,220,0.22)'},
+  {bg:'linear-gradient(160deg,#1A1A10 0%,#0D1B2A 100%)',glow:'rgba(201,168,76,0.09)',border:'var(--gold)',borderGlow:'rgba(201,168,76,0.25)'},
+  {bg:'linear-gradient(160deg,#201510 0%,#0D1B2A 100%)',glow:'rgba(220,140,80,0.08)',border:'var(--apoc)',borderGlow:'rgba(184,124,76,0.25)'},
+  {bg:'linear-gradient(160deg,#16221A 0%,#0D1B2A 100%)',glow:'rgba(122,158,126,0.09)',border:'var(--sage)',borderGlow:'rgba(122,158,126,0.25)'},
+  {bg:'linear-gradient(160deg,#1A1020 0%,#0D1B2A 100%)',glow:'rgba(200,100,150,0.07)',border:'#dc8aaa',borderGlow:'rgba(200,100,150,0.22)'},
+];
+function cardTheme(bookId) { return BG_THEMES[(bookId - 1) % BG_THEMES.length]; }
+
+function sectionTagHTML(section, translation) {
+  const labels = { ot: 'Old Testament', nt: 'New Testament', apo: 'Apocrypha' };
+  const cls    = { ot: 'tag-ot', nt: 'tag-nt', apo: 'tag-apo' };
+  const transCls = translation === 'NIV' ? 'badge-niv' : 'badge-apo';
+  return `
+    <div class="section-tag ${cls[section]}">${labels[section]}</div>
+    <div class="trans-chip"><span class="bk-badge ${transCls}">${translation}</span></div>`;
+}
+
+// ─────────────────────────────────────────────
+// POOL BUILDER
+// ─────────────────────────────────────────────
+function buildPool() {
+  // Build a pool of chapter references, then shuffle
+  // Each entry is a {translation, bookId, chapter, section} — verse-level expand on demand
+  const entries = [];
+
+  const addBooks = (books, translation) => {
+    for (const book of books) {
+      if (!filters[book.section]) continue;
+      // For NIV: only standard books. For KJV: standard + apocrypha.
+      for (let ch = 1; ch <= book.chapters; ch++) {
+        entries.push({ translation, bookId: book.id, chapter: ch, section: book.section });
+      }
+    }
+  };
+
+  // 66-book canon always from NIV; Apocrypha always from KJV
+  addBooks(BOOKS_STANDARD, 'NIV');
+  if (filters.apo) addBooks(BOOKS_APOCRYPHA, 'KJV');
+
+  return shuffle(entries);
+}
+
+// ─────────────────────────────────────────────
+// API
+// ─────────────────────────────────────────────
+async function fetchChapter(translation, bookId, chapter) {
+  const key = `${translation}-${bookId}-${chapter}`;
+  if (cache[key]) return cache[key];
+  try {
+    const res = await fetch(`${API}/get-text/${translation}/${bookId}/${chapter}/`);
+    if (!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    cache[key] = data;
+    return data;
+  } catch(e) { return null; }
+}
+
+// ─────────────────────────────────────────────
+// CARD CREATION
+// ─────────────────────────────────────────────
+function createVerseCard(translation, bookId, chapter, verseNum, text, isFirst) {
+  const book = bookById(bookId);
+  const theme = cardTheme(bookId);
+  const key = `${translation}:${bookId}:${chapter}:${verseNum}`;
+  const isSaved = savedSet.has(key);
+  const cleanText = text
+    .replace(/<[^>]+>/g, '')       // strip HTML tags
+    .replace(/\d{1,6}(,\d{1,6})*/g, '') // strip Strong's numbers (standalone digit runs)
+    .replace(/\s+/g, ' ')
+    .trim();
+  const refStr = `${book.name} ${chapter}:${verseNum}`;
+
+  const card = document.createElement('div');
+  card.className = 'verse-card';
+  card.dataset.key = key;
+  card.dataset.ref = refStr;
+  card.dataset.translation = translation;
+  card.style.setProperty('--card-bg', theme.bg);
+  card.style.setProperty('--card-glow', theme.glow);
+  card.style.setProperty('--border-color', theme.border);
+  card.style.setProperty('--border-glow', theme.borderGlow);
+
+  card.innerHTML = `
+    <div class="card-inner">
+      <div class="manuscript-border"></div>
+      ${sectionTagHTML(book.section, translation)}
+      <div class="verse-ref">${refStr}</div>
+      <p class="verse-text">${cleanText}</p>
+    </div>
+    <div class="side-actions">
+      <button class="action-btn ${isSaved?'saved':''}" data-action="save"
+        data-key="${key}" data-text="${encodeURIComponent(cleanText)}"
+        data-ref="${refStr}" data-trans="${translation}">
+        <div class="action-icon">🔖</div>
+        <span class="action-label">${isSaved?'Saved':'Save'}</span>
+      </button>
+      <button class="action-btn" data-action="share"
+        data-text="${encodeURIComponent(cleanText)}" data-ref="${refStr}" data-trans="${translation}">
+        <div class="action-icon">↗</div>
+        <span class="action-label">Share</span>
+      </button>
+    </div>
+    ${isFirst ? '<div class="scroll-hint"><span>↓</span>Scroll</div>' : ''}
+  `;
+  return card;
+}
+
+// ─────────────────────────────────────────────
+// RENDER ENGINE
+// ─────────────────────────────────────────────
+const scrollEl = document.getElementById('scroll-container');
+const progressBar = document.getElementById('progress-bar');
+const currentRefEl = document.getElementById('current-ref');
+
+async function renderNextChunk(count = 3) {
+  let rendered = 0;
+  while (rendered < count && poolIndex < versePool.length) {
+    const entry = versePool[poolIndex++];
+    const verses = await fetchChapter(entry.translation, entry.bookId, entry.chapter);
+    if (!verses || !verses.length) continue;
+
+    const isFirstEver = renderedCards.length === 0;
+    verses.forEach((v, vi) => {
+      const card = createVerseCard(entry.translation, entry.bookId, entry.chapter, v.verse, v.text, isFirstEver && vi === 0);
+      scrollEl.appendChild(card);
+      renderedCards.push(card);
+    });
+    rendered++;
+  }
+}
+
+let observer;
+function setupObserver() {
+  if (observer) observer.disconnect();
+  observer = new IntersectionObserver(async entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const idx = renderedCards.indexOf(entry.target);
+      if (idx !== -1) {
+        updateProgress(idx, entry.target);
+      }
+      if (!loadingMore && idx >= renderedCards.length - 25) {
+        loadingMore = true;
+        await renderNextChunk(4);
+        loadingMore = false;
+        renderedCards.slice(-50).forEach(c => observer.observe(c));
+      }
+    }
+  }, { threshold: 0.55 });
+  renderedCards.forEach(c => observer.observe(c));
+}
+
+function updateProgress(idx, card) {
+  const pct = Math.min(100, (poolIndex / versePool.length) * 100);
+  progressBar.style.width = pct + '%';
+  if (card) currentRefEl.textContent = `${card.dataset.ref} · ${card.dataset.translation}`;
+}
+
+// ─────────────────────────────────────────────
+// INIT / RESHUFFLE
+// ─────────────────────────────────────────────
+async function initFeed() {
+  scrollEl.innerHTML = '';
+  renderedCards = [];
+  poolIndex = 0;
+  loadingMore = false;
+  versePool = buildPool();
+
+  setLoadStatus('Fetching verses…', 30);
+  await renderNextChunk(4);
+  setLoadStatus('Almost there…', 80);
+  await renderNextChunk(2);
+
+  setupObserver();
+  scrollEl.scrollTo({ top: 0 });
+  setLoadStatus('Ready!', 100);
+  setTimeout(() => {
+    document.getElementById('loading-overlay').classList.add('hidden');
+  }, 400);
+}
+
+function setLoadStatus(msg, pct) {
+  document.getElementById('load-status').textContent = msg;
+  document.getElementById('load-bar').style.width = pct + '%';
+}
+
+// ─────────────────────────────────────────────
+// ACTIONS
+// ─────────────────────────────────────────────
+scrollEl.addEventListener('click', e => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const { action, key, text, ref, trans } = btn.dataset;
+  const decoded = decodeURIComponent(text || '');
+
+  if (action === 'save') {
+    if (savedSet.has(key)) {
+      savedSet.delete(key);
+      savedVerses = savedVerses.filter(v => v.key !== key);
+      btn.classList.remove('saved');
+      btn.querySelector('.action-label').textContent = 'Save';
+      showToast('Removed from saved');
+    } else {
+      savedSet.add(key);
+      savedVerses.push({ key, ref, text: decoded, translation: trans });
+      btn.classList.add('saved');
+      const icon = btn.querySelector('.action-icon');
+      icon.style.transform = 'scale(1.35)';
+      setTimeout(() => icon.style.transform = '', 300);
+      btn.querySelector('.action-label').textContent = 'Saved';
+      showToast('Verse saved ✦');
+    }
+    localStorage.setItem('bs_saved', JSON.stringify(savedVerses));
+  }
+
+  if (action === 'share') {
+    const shareText = `"${decoded}" — ${ref} (${trans})`;
+    if (navigator.share) navigator.share({ title: ref, text: shareText });
+    else { navigator.clipboard.writeText(shareText); showToast('Copied to clipboard'); }
+  }
+});
+
+// ─────────────────────────────────────────────
+// FILTER PANEL
+// ─────────────────────────────────────────────
+document.querySelectorAll('.filter-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const f = chip.dataset.filter;
+    filters[f] = !filters[f];
+    chip.classList.toggle('active', filters[f]);
+    chip.classList.toggle('inactive', !filters[f]);
+  });
+});
+
+document.getElementById('apply-filter').addEventListener('click', async () => {
+  closePanel('filter-panel');
+  document.getElementById('loading-overlay').classList.remove('hidden');
+  setLoadStatus('Reshuffling…', 10);
+  await initFeed();
+  showToast('Feed reshuffled ✦');
+});
+
+// ─────────────────────────────────────────────
+// BOOKS PANEL
+// ─────────────────────────────────────────────
+function buildBooksList() {
+  const container = document.getElementById('book-list-container');
+  container.innerHTML = '';
+
+  const sections = [
+    { label: 'Old Testament', cls: '', books: BOOKS_STANDARD.filter(b=>b.section==='ot'), trans: null },
+    { label: 'New Testament', cls: 'nt-head', books: BOOKS_STANDARD.filter(b=>b.section==='nt'), trans: null },
+    { label: 'Apocrypha (KJV)', cls: 'apo-head', books: BOOKS_APOCRYPHA, trans: 'KJV' },
+  ];
+
+  sections.forEach(sec => {
+    const wrap = document.createElement('div');
+    wrap.className = 'testament-section';
+    wrap.innerHTML = `<div class="testament-header ${sec.cls}">${sec.label}</div>`;
+    const grid = document.createElement('div');
+    grid.className = 'books-grid';
+    sec.books.forEach(book => {
+      const btn = document.createElement('button');
+      btn.className = 'book-btn';
+      const badgeCls = sec.trans === 'KJV' ? 'badge-apo' : '';
+      btn.innerHTML = `<span>${book.name}</span><span class="bk-ch">${book.chapters}ch</span>`;
+      btn.addEventListener('click', () => selectBookNav(book, sec.trans));
+      grid.appendChild(btn);
+    });
+    wrap.appendChild(grid);
+    container.appendChild(wrap);
+  });
+}
+
+function selectBookNav(book, forceTrans) {
+  selectedBookNav = { book, forceTrans };
+  const picker = document.getElementById('chapter-picker');
+  const grid = document.getElementById('chapters-grid');
+  document.getElementById('chapter-picker-title').textContent = `${book.name} — Select Chapter`;
+  grid.innerHTML = '';
+  picker.classList.add('visible');
+  picker.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  for (let ch = 1; ch <= book.chapters; ch++) {
+    const cb = document.createElement('button');
+    cb.className = 'ch-btn';
+    cb.textContent = ch;
+    cb.addEventListener('click', () => jumpToChapter(book, ch, forceTrans));
+    grid.appendChild(cb);
+  }
+}
+
+async function jumpToChapter(book, chapter, forceTrans) {
+  closePanel('books-panel');
+  document.getElementById('chapter-picker').classList.remove('visible');
+  document.getElementById('loading-overlay').classList.remove('hidden');
+  setLoadStatus(`Loading ${book.name} ${chapter}…`, 20);
+
+  if (observer) observer.disconnect();
+  scrollEl.innerHTML = '';
+  renderedCards = [];
+  loadingMore = false;
+
+  // Determine translation: apocrypha always KJV; others use current mix or forced
+  const translation = book.section === 'apo' ? 'KJV' : 'NIV';
+  const verses = await fetchChapter(translation, book.id, chapter);
+  if (verses && verses.length) {
+    verses.forEach((v, vi) => {
+      const card = createVerseCard(translation, book.id, chapter, v.verse, v.text, vi === 0);
+      scrollEl.appendChild(card);
+      renderedCards.push(card);
+    });
+  }
+
+  // Fill rest of feed with shuffled pool from current filters
+  poolIndex = 0;
+  versePool = buildPool();
+  await renderNextChunk(4);
+  setupObserver();
+  scrollEl.scrollTo({ top: 0 });
+  setLoadStatus('Ready!', 100);
+  setTimeout(() => document.getElementById('loading-overlay').classList.add('hidden'), 350);
+  showToast(`Jumped to ${book.name} ${chapter}`);
+}
+
+// ─────────────────────────────────────────────
+// SAVED PANEL
+// ─────────────────────────────────────────────
+function renderSaved() {
+  const list = document.getElementById('saved-list');
+  if (!savedVerses.length) {
+    list.innerHTML = '<div class="fav-empty">No saved verses yet.<br>Tap 🔖 while scrolling<br>to save a verse here.</div>';
+    return;
+  }
+  list.innerHTML = savedVerses.map(v => `
+    <div class="fav-item">
+      <button class="fav-remove" data-key="${v.key}">✕</button>
+      <div class="fav-ref">${v.ref} · ${v.translation || ''}</div>
+      <div class="fav-text">${v.text}</div>
+    </div>`).join('');
+
+  list.querySelectorAll('.fav-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const k = btn.dataset.key;
+      savedSet.delete(k);
+      savedVerses = savedVerses.filter(v => v.key !== k);
+      localStorage.setItem('bs_saved', JSON.stringify(savedVerses));
+      const card = document.querySelector(`[data-key="${k}"] [data-action="save"]`);
+      if (card) { card.classList.remove('saved'); card.querySelector('.action-label').textContent = 'Save'; }
+      renderSaved();
+    });
+  });
+}
+
+// ─────────────────────────────────────────────
+// PANEL HELPERS
+// ─────────────────────────────────────────────
+function openPanel(id) { document.getElementById(id).classList.add('open'); }
+function closePanel(id) { document.getElementById(id).classList.remove('open'); }
+
+document.getElementById('books-btn').addEventListener('click', () => { buildBooksList(); openPanel('books-panel'); });
+document.getElementById('books-close').addEventListener('click', () => { closePanel('books-panel'); document.getElementById('chapter-picker').classList.remove('visible'); });
+document.getElementById('favs-btn').addEventListener('click', () => { renderSaved(); openPanel('saved-panel'); });
+document.getElementById('saved-close').addEventListener('click', () => closePanel('saved-panel'));
+document.getElementById('filter-close').addEventListener('click', () => closePanel('filter-panel'));
+
+document.getElementById('nav-read').addEventListener('click', () => setActiveNav('nav-read'));
+document.getElementById('nav-filter').addEventListener('click', () => { openPanel('filter-panel'); setActiveNav('nav-filter'); });
+document.getElementById('nav-books').addEventListener('click', () => { buildBooksList(); openPanel('books-panel'); setActiveNav('nav-books'); });
+document.getElementById('nav-saved').addEventListener('click', () => { renderSaved(); openPanel('saved-panel'); setActiveNav('nav-saved'); });
+
+function setActiveNav(id) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+// ─────────────────────────────────────────────
+// TOAST
+// ─────────────────────────────────────────────
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2300);
+}
+
+// ─────────────────────────────────────────────
+// BOOT
+// ─────────────────────────────────────────────
+buildBooksList();
+initFeed();
+</script>
+</body>
+</html>
